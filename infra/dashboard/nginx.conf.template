@@ -1,0 +1,40 @@
+server {
+    listen 80 default_server;
+    server_name _;
+
+    root /usr/share/nginx/html;
+    index index.html;
+
+    # Use docker's embedded DNS resolver. With a variable in proxy_pass,
+    # nginx defers resolution until request time, so missing upstreams
+    # (e.g., node4/node5 in 3-node mode) don't prevent nginx from starting.
+    resolver 127.0.0.11 ipv6=off valid=10s;
+
+    # Static dashboard files
+    location / {
+        try_files $uri $uri/ /index.html;
+    }
+
+    # Inject the cluster topology at index load time.
+    location = /index.html {
+        sub_filter '<script src="viz.js"></script>' '<script>window.RAFT_NODES="${RAFT_NODES}";</script><script src="viz.js"></script>';
+        sub_filter_once on;
+    }
+
+    # SSE event proxy: /events/nodeN → http://nodeN:8100/events
+    # The named regex capture forces nginx to resolve $node at request time.
+    location ~ ^/events/(?<node>node[0-9]+)$ {
+        set $upstream http://$node:8100/events;
+        proxy_pass $upstream;
+        include /etc/nginx/conf.d/sse.inc;
+    }
+
+    # Control endpoints handled by the control-broker container.
+    # The named regex captures the path after /control/ and forwards it.
+    location ~ ^/control/(?<ctl_path>.*)$ {
+        set $broker http://broker:9100/$ctl_path;
+        proxy_pass $broker;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+    }
+}

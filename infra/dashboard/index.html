@@ -1,0 +1,55 @@
+<!doctype html>
+<html lang="pt-br">
+<head>
+  <meta charset="utf-8">
+  <title>Raft Visualizer — Cluster ao Vivo</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header>
+    <h1>Cluster Raft — ao vivo</h1>
+    <div id="cluster-stats">
+      <span>term: <strong id="stat-term">—</strong></span>
+      <span>commit_idx: <strong id="stat-commit">—</strong></span>
+      <span>quorum: <strong id="stat-quorum">—</strong></span>
+      <span>líder: <strong id="stat-leader">—</strong></span>
+    </div>
+    <div id="controls">
+      <button id="btn-kill-leader" title="Derruba o líder atual">Kill leader</button>
+      <select id="kill-node">
+        <option value="">Kill node...</option>
+      </select>
+      <select id="partition-preset">
+        <option value="">Partition...</option>
+        <option value="1|2,3">(1) | (2,3)</option>
+        <option value="2|1,3">(2) | (1,3)</option>
+        <option value="3|1,2">(3) | (1,2)</option>
+      </select>
+      <button id="btn-heal">Heal all</button>
+      <button id="btn-put">Put random KV</button>
+      <label class="toggle">
+        <input type="checkbox" id="toggle-pause"> Pause stream
+      </label>
+      <label class="toggle">
+        <input type="checkbox" id="toggle-slow" checked> Slow motion
+      </label>
+    </div>
+  </header>
+
+  <main>
+    <section id="nodes"></section>
+
+    <section id="logs">
+      <h2>Logs dos nós</h2>
+      <div id="logs-table"></div>
+    </section>
+
+    <section id="event-log">
+      <h2>Eventos (ao vivo)</h2>
+      <div id="event-log-list"></div>
+    </section>
+  </main>
+
+  <script src="viz.js"></script>
+</body>
+</html>

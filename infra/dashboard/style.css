@@ -1,0 +1,257 @@
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  font-family: -apple-system, system-ui, "Segoe UI", Roboto, sans-serif;
+  background: #1a1d23;
+  color: #e7e9ee;
+  font-size: 14px;
+}
+
+header {
+  padding: 12px 20px;
+  background: #11141a;
+  border-bottom: 1px solid #2a2f3a;
+}
+
+header h1 {
+  margin: 0 0 8px;
+  font-size: 18px;
+  font-weight: 600;
+}
+
+#cluster-stats {
+  display: flex;
+  gap: 24px;
+  font-size: 13px;
+  color: #9aa2b1;
+  margin-bottom: 12px;
+}
+
+#cluster-stats strong {
+  color: #e7e9ee;
+  font-variant-numeric: tabular-nums;
+}
+
+#controls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+
+#controls button,
+#controls select {
+  background: #2a2f3a;
+  color: #e7e9ee;
+  border: 1px solid #3a414f;
+  padding: 6px 12px;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 13px;
+}
+
+#controls button:hover,
+#controls select:hover {
+  background: #353b48;
+}
+
+#controls .toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: #9aa2b1;
+}
+
+main {
+  display: grid;
+  grid-template-columns: 1fr;
+  grid-template-rows: 220px 1fr 200px;
+  gap: 1px;
+  height: calc(100vh - 130px);
+  background: #2a2f3a;
+}
+
+section {
+  background: #1a1d23;
+  padding: 16px 20px;
+  overflow: auto;
+}
+
+section h2 {
+  margin: 0 0 12px;
+  font-size: 13px;
+  font-weight: 600;
+  color: #9aa2b1;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+#nodes {
+  display: flex;
+  justify-content: space-around;
+  align-items: center;
+  position: relative;
+  padding: 16px;
+}
+
+#nodes svg.arrows {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+}
+
+.node {
+  width: 160px;
+  height: 140px;
+  border-radius: 8px;
+  border: 2px solid #3a414f;
+  background: #232831;
+  padding: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  transition: background-color 0.3s ease, border-color 0.3s ease;
+  position: relative;
+  z-index: 2;
+}
+
+.node-name {
+  font-weight: 600;
+  font-size: 14px;
+}
+
+.node-role {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  font-weight: 600;
+}
+
+.node-stats {
+  font-size: 12px;
+  color: #9aa2b1;
+  font-variant-numeric: tabular-nums;
+  line-height: 1.4;
+}
+
+.node[data-role="follower"] {
+  background: #2c323d;
+  border-color: #4a5060;
+}
+
+.node[data-role="candidate"] {
+  background: #4a3f1a;
+  border-color: #d4a72c;
+}
+
+.node[data-role="candidate"] .node-role {
+  color: #e9c46a;
+}
+
+.node[data-role="leader"] {
+  background: #1f3a2a;
+  border-color: #4caf50;
+}
+
+.node[data-role="leader"] .node-role {
+  color: #6fcf7a;
+}
+
+.node[data-disconnected="true"] {
+  background: #3a1f24;
+  border-color: #c44;
+  opacity: 0.6;
+}
+
+.node[data-disconnected="true"] .node-role {
+  color: #e57373;
+}
+
+#logs-table {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.log-row {
+  display: grid;
+  grid-template-columns: 80px 1fr 100px;
+  align-items: center;
+  gap: 12px;
+}
+
+.log-row .log-node {
+  font-weight: 600;
+  font-size: 13px;
+}
+
+.log-row .log-entries {
+  display: flex;
+  gap: 2px;
+  flex-wrap: wrap;
+}
+
+.log-entry {
+  width: 24px;
+  height: 24px;
+  border: 1px solid #3a414f;
+  background: #fff;
+  border-radius: 2px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 9px;
+  color: #444;
+  font-variant-numeric: tabular-nums;
+}
+
+.log-entry[data-committed="true"] {
+  background: #4caf50;
+  border-color: #4caf50;
+  color: #fff;
+}
+
+.log-row .log-meta {
+  font-size: 11px;
+  color: #9aa2b1;
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+
+#event-log-list {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 11px;
+  line-height: 1.5;
+  color: #9aa2b1;
+}
+
+.event-line {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.event-line .ev-t { color: #7a8194; }
+.event-line .ev-rpc-send { color: #6fcf7a; }
+.event-line .ev-rpc-resp { color: #4a9eff; }
+.event-line .ev-apply { color: #e9c46a; }
+.event-line .ev-role { color: #d96a6a; font-weight: 600; }
+
+.arrow-append { stroke: #4caf50; }
+.arrow-vote { stroke: #4a9eff; stroke-dasharray: 4 4; }
+.arrow-fail { stroke: #c44; }
+
+@keyframes arrow-fade {
+  0% { stroke-opacity: 1; stroke-width: 2.5; }
+  100% { stroke-opacity: 0; stroke-width: 0.5; }
+}
+
+.arrow {
+  fill: none;
+  stroke-linecap: round;
+  animation: arrow-fade 1.2s ease-out forwards;
+}
