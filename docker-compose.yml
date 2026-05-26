@@ -1,0 +1,117 @@
+name: atividade-consenso-raft
+
+# Three-node Raft cluster + visualizer dashboard + control broker.
+#
+# RAFT_PEERS lists every voting member of the cluster (id=host:port).
+# Only node1 has RAFT_BOOTSTRAP=true; it creates the initial cluster
+# configuration. The others learn about peers via the bootstrap.
+#
+# SLOW_MOTION=true bumps election timeouts to ~3s so humans can watch
+# elections unfold. Set SLOW_MOTION=false for production-speed timings.
+
+services:
+  node1:
+    build:
+      context: ./infra/node
+    container_name: node1
+    hostname: node1
+    networks:
+      rede-raft:
+    environment:
+      NODE_ID: node1
+      RAFT_ADDR: 0.0.0.0:7000
+      HTTP_ADDR: 0.0.0.0:9000
+      EVENT_ADDR: 0.0.0.0:8100
+      DATA_DIR: /data
+      RAFT_PEERS: "node1=node1:7000,node2=node2:7000,node3=node3:7000"
+      RAFT_BOOTSTRAP: "true"
+      SLOW_MOTION: "true"
+    volumes:
+      - node1-data:/data
+    expose: ["7000", "8100", "9000"]
+    ports:
+      - "9001:9000"   # HTTP API exposed on host for put.sh helper
+
+  node2:
+    build:
+      context: ./infra/node
+    container_name: node2
+    hostname: node2
+    networks:
+      rede-raft:
+    environment:
+      NODE_ID: node2
+      RAFT_ADDR: 0.0.0.0:7000
+      HTTP_ADDR: 0.0.0.0:9000
+      EVENT_ADDR: 0.0.0.0:8100
+      DATA_DIR: /data
+      RAFT_PEERS: "node1=node1:7000,node2=node2:7000,node3=node3:7000"
+      RAFT_BOOTSTRAP: "false"
+      SLOW_MOTION: "true"
+    volumes:
+      - node2-data:/data
+    expose: ["7000", "8100", "9000"]
+    ports:
+      - "9002:9000"
+
+  node3:
+    build:
+      context: ./infra/node
+    container_name: node3
+    hostname: node3
+    networks:
+      rede-raft:
+    environment:
+      NODE_ID: node3
+      RAFT_ADDR: 0.0.0.0:7000
+      HTTP_ADDR: 0.0.0.0:9000
+      EVENT_ADDR: 0.0.0.0:8100
+      DATA_DIR: /data
+      RAFT_PEERS: "node1=node1:7000,node2=node2:7000,node3=node3:7000"
+      RAFT_BOOTSTRAP: "false"
+      SLOW_MOTION: "true"
+    volumes:
+      - node3-data:/data
+    expose: ["7000", "8100", "9000"]
+    ports:
+      - "9003:9000"
+
+  dashboard:
+    build:
+      context: ./infra/dashboard
+    container_name: raft-dashboard
+    hostname: dashboard
+    networks:
+      rede-raft:
+    environment:
+      RAFT_NODES: "node1,node2,node3"
+    ports:
+      - "8080:80"
+    depends_on:
+      - node1
+      - node2
+      - node3
+
+  broker:
+    build:
+      context: ./infra/broker
+    container_name: raft-broker
+    hostname: broker
+    networks:
+      rede-raft:
+    environment:
+      RAFT_NODES: "node1,node2,node3"
+      RAFT_NETWORK: "atividade-consenso-raft_rede-raft"
+      BROKER_PORT: "9100"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    expose: ["9100"]
+
+networks:
+  rede-raft:
+    driver: bridge
+
+volumes:
+  node1-data:
+  node2-data:
+  node3-data:
