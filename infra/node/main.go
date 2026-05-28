@@ -38,10 +38,13 @@ func main() {
 	cfg.LocalID = raft.ServerID(*nodeID)
 	cfg.LogLevel = "INFO"
 	if *slowMotion {
-		cfg.HeartbeatTimeout = 1500 * time.Millisecond
-		cfg.ElectionTimeout = 3000 * time.Millisecond
-		cfg.LeaderLeaseTimeout = 1500 * time.Millisecond
-		cfg.CommitTimeout = 500 * time.Millisecond
+		// Heartbeats fire at ~HeartbeatTimeout/10. With 5s timeout that's ~500ms
+		// between heartbeats, slow enough for a human to follow without flooding
+		// the dashboard event log.
+		cfg.HeartbeatTimeout = 5000 * time.Millisecond
+		cfg.ElectionTimeout = 10000 * time.Millisecond
+		cfg.LeaderLeaseTimeout = 5000 * time.Millisecond
+		cfg.CommitTimeout = 1000 * time.Millisecond
 	}
 
 	logStore, err := boltdb.NewBoltStore(filepath.Join(*dataDir, "raft-log.bolt"))

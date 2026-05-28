@@ -2,7 +2,6 @@ package main
 
 import (
 	"io"
-	"time"
 
 	"github.com/hashicorp/raft"
 )
@@ -54,6 +53,9 @@ func (t *observingTransport) AppendEntries(id raft.ServerID, target raft.ServerA
 			RPC:     "AppendEntriesResp",
 			Term:    resp.Term,
 			Success: resp.Success,
+			// Tag the response with the request's payload size so the dashboard
+			// can tell a heartbeat-ack from a real replication-ack.
+			Entries: len(args.Entries),
 		})
 	}
 	return err
@@ -96,8 +98,69 @@ func (t *observingTransport) InstallSnapshot(id raft.ServerID, target raft.Serve
 }
 
 func (t *observingTransport) AppendEntriesPipeline(id raft.ServerID, target raft.ServerAddress) (raft.AppendPipeline, error) {
-	return t.inner.AppendEntriesPipeline(id, target)
+	// hashicorp/raft uses a pipeline transport for streaming AppendEntries to
+	// followers; those calls bypass the AppendEntries method above. Wrap the
+	// returned pipeline so log-replication RPCs also show up on the bus.
+	inner, err := t.inner.AppendEntriesPipeline(id, target)
+	if err != nil {
+		return inner, err
+	}
+	p := &observingPipeline{
+		inner:    inner,
+		nodeID:   t.nodeID,
+		peerID:   string(id),
+		bus:      t.bus,
+		consumer: make(chan raft.AppendFuture, 128),
+	}
+	// Bridge: read finished futures from the inner pipeline, emit the response
+	// event with the request's entry count, then forward the inner future to
+	// the consumer so the raft library can process it normally.
+	go func() {
+		for fut := range inner.Consumer() {
+			entries := 0
+			if req := fut.Request(); req != nil {
+				entries = len(req.Entries)
+			}
+			if resp := fut.Response(); resp != nil && fut.Error() == nil {
+				t.bus.publish(event{
+					Type:    "rpc_resp",
+					Node:    p.nodeID,
+					From:    p.peerID,
+					To:      p.nodeID,
+					RPC:     "AppendEntriesResp",
+					Term:    resp.Term,
+					Success: resp.Success,
+					Entries: entries,
+				})
+			}
+			p.consumer <- fut
+		}
+		close(p.consumer)
+	}()
+	return p, nil
 }
 
-// suppress unused
-var _ = time.Second
+type observingPipeline struct {
+	inner    raft.AppendPipeline
+	nodeID   string
+	peerID   string
+	bus      *eventBus
+	consumer chan raft.AppendFuture
+}
+
+func (p *observingPipeline) AppendEntries(args *raft.AppendEntriesRequest, resp *raft.AppendEntriesResponse) (raft.AppendFuture, error) {
+	p.bus.publish(event{
+		Type:    "rpc_send",
+		Node:    p.nodeID,
+		From:    p.nodeID,
+		To:      p.peerID,
+		RPC:     "AppendEntries",
+		Term:    args.Term,
+		PrevIdx: args.PrevLogEntry,
+		Entries: len(args.Entries),
+	})
+	return p.inner.AppendEntries(args, resp)
+}
+
+func (p *observingPipeline) Consumer() <-chan raft.AppendFuture { return p.consumer }
+func (p *observingPipeline) Close() error                       { return p.inner.Close() }
