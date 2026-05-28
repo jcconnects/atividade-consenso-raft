@@ -9,14 +9,17 @@ import (
 // wrapTransport wraps a raft.Transport so every outgoing RPC produces a
 // "rpc_send" event on the bus. Incoming responses produce companion events.
 // This is what makes AppendEntries / RequestVote visible on the dashboard.
-func wrapTransport(inner raft.Transport, nodeID string, bus *eventBus) raft.Transport {
-	return &observingTransport{inner: inner, nodeID: nodeID, bus: bus}
+// The tracker observes successful AppendEntriesResp to estimate per-peer
+// match_index for the `replication` event emitted by publishReplication.
+func wrapTransport(inner raft.Transport, nodeID string, bus *eventBus, tracker *replicationTracker) raft.Transport {
+	return &observingTransport{inner: inner, nodeID: nodeID, bus: bus, tracker: tracker}
 }
 
 type observingTransport struct {
-	inner  raft.Transport
-	nodeID string
-	bus    *eventBus
+	inner   raft.Transport
+	nodeID  string
+	bus     *eventBus
+	tracker *replicationTracker
 }
 
 func (t *observingTransport) Consumer() <-chan raft.RPC { return t.inner.Consumer() }
@@ -33,6 +36,7 @@ func (t *observingTransport) TimeoutNow(id raft.ServerID, target raft.ServerAddr
 }
 
 func (t *observingTransport) AppendEntries(id raft.ServerID, target raft.ServerAddress, args *raft.AppendEntriesRequest, resp *raft.AppendEntriesResponse) error {
+	highIdx := args.PrevLogEntry + uint64(len(args.Entries))
 	t.bus.publish(event{
 		Type:    "rpc_send",
 		Node:    t.nodeID,
@@ -42,6 +46,7 @@ func (t *observingTransport) AppendEntries(id raft.ServerID, target raft.ServerA
 		Term:    args.Term,
 		PrevIdx: args.PrevLogEntry,
 		Entries: len(args.Entries),
+		Index:   highIdx,
 	})
 	err := t.inner.AppendEntries(id, target, args, resp)
 	if err == nil {
@@ -56,7 +61,11 @@ func (t *observingTransport) AppendEntries(id raft.ServerID, target raft.ServerA
 			// Tag the response with the request's payload size so the dashboard
 			// can tell a heartbeat-ack from a real replication-ack.
 			Entries: len(args.Entries),
+			Index:   highIdx,
 		})
+		if resp.Success && t.tracker != nil {
+			t.tracker.observe(string(id), highIdx)
+		}
 	}
 	return err
 }
@@ -110,6 +119,7 @@ func (t *observingTransport) AppendEntriesPipeline(id raft.ServerID, target raft
 		nodeID:   t.nodeID,
 		peerID:   string(id),
 		bus:      t.bus,
+		tracker:  t.tracker,
 		consumer: make(chan raft.AppendFuture, 128),
 	}
 	// Bridge: read finished futures from the inner pipeline, emit the response
@@ -118,8 +128,10 @@ func (t *observingTransport) AppendEntriesPipeline(id raft.ServerID, target raft
 	go func() {
 		for fut := range inner.Consumer() {
 			entries := 0
+			var highIdx uint64
 			if req := fut.Request(); req != nil {
 				entries = len(req.Entries)
+				highIdx = req.PrevLogEntry + uint64(entries)
 			}
 			if resp := fut.Response(); resp != nil && fut.Error() == nil {
 				t.bus.publish(event{
@@ -131,7 +143,11 @@ func (t *observingTransport) AppendEntriesPipeline(id raft.ServerID, target raft
 					Term:    resp.Term,
 					Success: resp.Success,
 					Entries: entries,
+					Index:   highIdx,
 				})
+				if resp.Success && p.tracker != nil {
+					p.tracker.observe(p.peerID, highIdx)
+				}
 			}
 			p.consumer <- fut
 		}
@@ -145,10 +161,12 @@ type observingPipeline struct {
 	nodeID   string
 	peerID   string
 	bus      *eventBus
+	tracker  *replicationTracker
 	consumer chan raft.AppendFuture
 }
 
 func (p *observingPipeline) AppendEntries(args *raft.AppendEntriesRequest, resp *raft.AppendEntriesResponse) (raft.AppendFuture, error) {
+	highIdx := args.PrevLogEntry + uint64(len(args.Entries))
 	p.bus.publish(event{
 		Type:    "rpc_send",
 		Node:    p.nodeID,
@@ -158,6 +176,7 @@ func (p *observingPipeline) AppendEntries(args *raft.AppendEntriesRequest, resp 
 		Term:    args.Term,
 		PrevIdx: args.PrevLogEntry,
 		Entries: len(args.Entries),
+		Index:   highIdx,
 	})
 	return p.inner.AppendEntries(args, resp)
 }

@@ -17,6 +17,7 @@ type event struct {
 	CommitIndex uint64  `json:"commit_idx,omitempty"`
 	LastLogIdx  uint64  `json:"last_log_idx,omitempty"`
 	LastApplied uint64  `json:"last_applied,omitempty"`
+	HeartbeatMs uint64  `json:"heartbeat_ms,omitempty"`
 	From        string  `json:"from,omitempty"`
 	To          string  `json:"to,omitempty"`
 	RPC         string  `json:"rpc,omitempty"`

@@ -24,7 +24,7 @@ func main() {
 	dataDir := flag.String("data-dir", envOr("DATA_DIR", "/data"), "data directory")
 	peersFlag := flag.String("peers", os.Getenv("RAFT_PEERS"), "comma-separated id=addr peers (includes self)")
 	bootstrap := flag.Bool("bootstrap", envBool("RAFT_BOOTSTRAP", false), "bootstrap cluster from this node")
-	slowMotion := flag.Bool("slow-motion", envBool("SLOW_MOTION", true), "slow-motion election timeouts for human observation")
+	heartbeatMs := flag.Int("heartbeat-ms", envInt("RAFT_HEARTBEAT_MS", 5000), "Raft heartbeat interval (ms); election timeout = 2× this")
 	flag.Parse()
 
 	if err := os.MkdirAll(*dataDir, 0o755); err != nil {
@@ -34,18 +34,16 @@ func main() {
 	bus := newEventBus()
 	go bus.serve(*eventAddr)
 
+	// Timeouts derive from a single HEARTBEAT_MS parameter to keep all
+	// observable timing proportional (see infra/dashboard/docs/TEMPO.md).
+	hb := time.Duration(*heartbeatMs) * time.Millisecond
 	cfg := raft.DefaultConfig()
 	cfg.LocalID = raft.ServerID(*nodeID)
 	cfg.LogLevel = "INFO"
-	if *slowMotion {
-		// Heartbeats fire at ~HeartbeatTimeout/10. With 5s timeout that's ~500ms
-		// between heartbeats, slow enough for a human to follow without flooding
-		// the dashboard event log.
-		cfg.HeartbeatTimeout = 5000 * time.Millisecond
-		cfg.ElectionTimeout = 10000 * time.Millisecond
-		cfg.LeaderLeaseTimeout = 5000 * time.Millisecond
-		cfg.CommitTimeout = 1000 * time.Millisecond
-	}
+	cfg.HeartbeatTimeout = hb
+	cfg.ElectionTimeout = 2 * hb
+	cfg.LeaderLeaseTimeout = hb
+	cfg.CommitTimeout = hb / 5
 
 	logStore, err := boltdb.NewBoltStore(filepath.Join(*dataDir, "raft-log.bolt"))
 	if err != nil {
@@ -68,7 +66,8 @@ func main() {
 	if err != nil {
 		log.Fatalf("create transport: %v", err)
 	}
-	transport := wrapTransport(addr, *nodeID, bus)
+	tracker := newReplicationTracker()
+	transport := wrapTransport(addr, *nodeID, bus, tracker)
 
 	fsm := newKVFSM(bus, *nodeID)
 
@@ -89,7 +88,8 @@ func main() {
 	}
 
 	registerObserver(r, *nodeID, bus)
-	go pollState(r, *nodeID, bus)
+	go pollState(r, *nodeID, bus, uint64(*heartbeatMs))
+	go publishReplication(r, *nodeID, bus, tracker)
 
 	api := newHTTPAPI(r, fsm, *nodeID)
 	log.Printf("[%s] HTTP API listening on %s", *nodeID, *httpAddr)
@@ -117,6 +117,18 @@ func envBool(key string, def bool) bool {
 		return def
 	}
 	return b
+}
+
+func envInt(key string, def int) int {
+	v := os.Getenv(key)
+	if v == "" {
+		return def
+	}
+	n, err := strconv.Atoi(v)
+	if err != nil {
+		return def
+	}
+	return n
 }
 
 // resolveAdvertise picks the host:port this node should advertise to peers.
@@ -157,7 +169,7 @@ func parsePeers(s string) []raft.Server {
 // pollState publishes periodic state snapshots so the dashboard can recover
 // from missed events and so commit_idx changes are reflected even when no
 // observer event fires.
-func pollState(r *raft.Raft, nodeID string, bus *eventBus) {
+func pollState(r *raft.Raft, nodeID string, bus *eventBus, heartbeatMs uint64) {
 	tick := time.NewTicker(500 * time.Millisecond)
 	defer tick.Stop()
 	for range tick.C {
@@ -170,6 +182,7 @@ func pollState(r *raft.Raft, nodeID string, bus *eventBus) {
 			CommitIndex: atoiOr(stats["commit_index"]),
 			LastLogIdx:  atoiOr(stats["last_log_index"]),
 			LastApplied: atoiOr(stats["applied_index"]),
+			HeartbeatMs: heartbeatMs,
 		})
 	}
 }
