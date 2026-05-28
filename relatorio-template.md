@@ -30,7 +30,7 @@
 
 ## Nível 0b — Derrubar líder ao vivo
 
-4. Quanto tempo (aproximadamente, em modo lento) passou entre a morte do líder e a eleição do novo líder?
+4. Quanto tempo (aproximadamente, no `HEARTBEAT_MS` configurado) passou entre a morte do líder e a eleição do novo líder?
 
 > _Resposta:_
 
