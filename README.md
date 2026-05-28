@@ -349,32 +349,6 @@ Observe: o cluster trava. Os dois nós restantes (`node4`, `node5`) tentam elei�
 3. Qual o trade-off de aumentar o tamanho do cluster? (Dica: pense em latência de comprometimento e overhead de mensagens.)
 4. Em que cenário real (em termos de operação de produção) você escolheria 5 nós em vez de 3?
 
-Restaure o cluster original de 3 nós antes de seguir para a Modificação B.
-
-### Modificação B — Adicionar operação CAS (compare-and-swap) (aberta)
-
-A FSM atual suporta `PUT` (escreve incondicional) e `GET` (lê). Operações concorrentes via PUT podem causar perda de atualização: cliente A lê `x=1`, cliente B lê `x=1`, ambos escrevem `x=2` e `x=3` respectivamente — uma das escritas é silenciosamente perdida.
-
-Sua tarefa: adicionar operação **`CAS(key, expected, new)`** — "atualize `key` para `new` se e somente se o valor atual for `expected`; caso contrário, falhe". CAS é a primitiva clássica usada para implementar contadores, locks otimistas e estruturas concorrentes em sistemas distribuídos.
-
-**Passos sugeridos:**
-
-1. Em `infra/node/fsm.go`, identifique o `switch` em `Apply()`. Adicione um novo `case` para o tipo de comando `CAS`.
-2. Em `infra/node/http.go`, adicione uma rota `POST /cas` que recebe `{key, expected, new}` e submete o comando ao Raft.
-3. Reconstrua: `docker compose up --build`.
-4. Teste:
-   ```bash
-   curl -X POST localhost:9001/put -d '{"key":"contador","value":"0"}'
-   curl -X POST localhost:9001/cas -d '{"key":"contador","expected":"0","new":"1"}'   # sucesso
-   curl -X POST localhost:9001/cas -d '{"key":"contador","expected":"0","new":"2"}'   # falha (já é "1")
-   ```
-
-**Responda no relatório:**
-
-1. Por que o CAS **precisa obrigatoriamente** passar pelo log Raft, mesmo que pareça uma simples leitura-seguida-de-escrita? O que aconteceria se cada nó decidisse o resultado do CAS localmente, sem replicar?
-2. Linearizabilidade é a propriedade que garante que operações concorrentes parecem ocorrer em alguma ordem sequencial consistente. Como Raft + CAS produzem operações linearizáveis mesmo com replicação assíncrona entre nós?
-3. Cole no relatório o trecho do `Apply()` que você modificou e o trecho da rota HTTP que você adicionou.
-
 ---
 
 ## Entregável
