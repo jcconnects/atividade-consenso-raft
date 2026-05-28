@@ -3,8 +3,10 @@
 Endpoints (POST):
   /kill-leader     query each node /status, find leader, docker stop it
   /kill-node       body {node}: docker stop that node
-  /heal            reconnect all stopped nodes; rejoin partitioned containers
-  /partition       body {isolate:[ids], majority:[ids]}: docker network disconnect
+  /heal            restart stopped nodes; flush iptables rules so peers can talk
+  /partition       body {isolate:[ids], majority:[ids]}: drop raft-port (7000) traffic
+                   between isolated and majority sets via iptables. Dashboard SSE
+                   (port 8100) stays open so the UI keeps showing the node alive.
   /put             body {key, value}: forward to current leader's HTTP API
   /slow-motion     body {enabled}: noop (slow motion is set at boot via env)
 """
@@ -17,6 +19,30 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 
 NODES = os.environ.get("RAFT_NODES", "node1,node2,node3").split(",")
 NETWORK = os.environ.get("RAFT_NETWORK", "rede-raft")
+RAFT_PORT = os.environ.get("RAFT_PORT", "7000")
+
+
+def node_ip(node):
+    """Resolve a container's IP on the raft bridge network. Cached briefly."""
+    code, out, _ = docker("inspect", "-f",
+                          "{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}",
+                          node)
+    return out.strip() if code == 0 else ""
+
+
+def partition_drop(node, peer_ip):
+    """Install iptables rules on `node` that drop all raft-port traffic to/from peer_ip."""
+    # Block outbound to peer raft port and inbound from peer source.
+    docker("exec", node, "iptables", "-I", "OUTPUT", "-d", peer_ip,
+           "-p", "tcp", "--dport", RAFT_PORT, "-j", "DROP")
+    docker("exec", node, "iptables", "-I", "INPUT", "-s", peer_ip,
+           "-p", "tcp", "--sport", RAFT_PORT, "-j", "DROP")
+
+
+def partition_clear(node):
+    """Flush all iptables rules on `node` (returns it to default ACCEPT)."""
+    docker("exec", node, "iptables", "-F", "INPUT")
+    docker("exec", node, "iptables", "-F", "OUTPUT")
 
 
 def docker(*args):
@@ -97,19 +123,29 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/heal":
             results = {}
             for node in NODES:
-                # Reconnect to network if previously disconnected.
-                docker("network", "connect", NETWORK, node)
-                # Start the container if it was stopped.
+                # Restart container if it was killed.
                 docker("start", node)
+                # Flush any iptables partition rules so peers can talk again.
+                partition_clear(node)
                 results[node] = "healed"
             return reply(self, 200, results)
 
         if path == "/partition":
             isolate = body.get("isolate", [])
+            majority = body.get("majority", [n for n in NODES if n not in isolate])
             results = {}
-            for node in isolate:
-                code, out, err = docker("network", "disconnect", NETWORK, node)
-                results[node] = err if code != 0 else "disconnected"
+            # Symmetric DROP on raft port between each (isolated, majority) pair.
+            # Install on both sides so TCP SYN+SYN-ACK both get dropped.
+            for iso in isolate:
+                for maj in majority:
+                    iso_ip = node_ip(iso)
+                    maj_ip = node_ip(maj)
+                    if not iso_ip or not maj_ip:
+                        results[f"{iso}<->{maj}"] = "ip lookup failed"
+                        continue
+                    partition_drop(iso, maj_ip)
+                    partition_drop(maj, iso_ip)
+                    results[f"{iso}<->{maj}"] = "blocked on port " + RAFT_PORT
             return reply(self, 200, results)
 
         if path == "/put":

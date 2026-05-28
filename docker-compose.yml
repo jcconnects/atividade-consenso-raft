@@ -6,8 +6,9 @@ name: atividade-consenso-raft
 # Only node1 has RAFT_BOOTSTRAP=true; it creates the initial cluster
 # configuration. The others learn about peers via the bootstrap.
 #
-# SLOW_MOTION=true bumps election timeouts to ~3s so humans can watch
-# elections unfold. Set SLOW_MOTION=false for production-speed timings.
+# SLOW_MOTION=true bumps election timeouts to ~10s and heartbeats to ~500ms
+# so humans can watch elections unfold without being flooded by heartbeats.
+# Set SLOW_MOTION=false for production-speed timings.
 
 services:
   node1:
@@ -15,6 +16,8 @@ services:
       context: ./infra/node
     container_name: node1
     hostname: node1
+    cap_add:
+      - NET_ADMIN
     networks:
       rede-raft:
     environment:
@@ -37,6 +40,8 @@ services:
       context: ./infra/node
     container_name: node2
     hostname: node2
+    cap_add:
+      - NET_ADMIN
     networks:
       rede-raft:
     environment:
@@ -59,6 +64,8 @@ services:
       context: ./infra/node
     container_name: node3
     hostname: node3
+    cap_add:
+      - NET_ADMIN
     networks:
       rede-raft:
     environment:
