@@ -46,10 +46,12 @@ Ao final desta atividade, você será capaz de:
 
 ```
 atividade-consenso-raft/
-├── docker-compose.yml         ← orquestra cluster + dashboard
+├── docker-compose.yml         ← orquestra cluster + dashboard + broker
 ├── infra/
-│   ├── node/                  ← binário Go: nó Raft + KV + event tap
+│   ├── node/                  ← binário Go: nó Raft + KV + event tap (com iptables)
 │   ├── dashboard/             ← HTML+JS estático, visualizador ao vivo
+│   ├── broker/                ← serviço Python que traduz cliques do dashboard
+│   │                            em ações de controle (kill, partition via iptables, heal)
 │   └── scripts/
 │       ├── kill-leader.sh     ← identifica líder atual e o derruba
 │       ├── partition.sh       ← isola subconjunto de nós da rede
@@ -81,7 +83,26 @@ atividade-consenso-raft/
                                 seu navegador
 ```
 
-Os três nós formam o cluster Raft, comunicando-se por RPCs `AppendEntries` e `RequestVote` entre si. O dashboard observa todos os três (via WebSocket), agrega seus eventos e desenha o estado do cluster no navegador em tempo real.
+Os três nós formam o cluster Raft, comunicando-se por RPCs `AppendEntries` e `RequestVote` entre si. O dashboard observa todos os três (via Server-Sent Events), agrega seus eventos e desenha o estado do cluster no navegador em tempo real.
+
+Os nós são renderizados em **layout circular** e ligados por **linhas tracejadas cinzas** que representam a topologia ativa da rede: enquanto dois nós podem se comunicar, existe uma linha entre eles; quando uma partição é aplicada, a linha some.
+
+Cada RPC enviado é representado por um **pacote animado** (círculo colorido) que parte do nó remetente e viaja até o destinatário: verde para `AppendEntries`, azul para `RequestVote`.
+
+### Legenda visual do dashboard
+
+| Elemento | Significado |
+|---|---|
+| Caixa cinza | Nó no papel `Follower` |
+| Caixa amarela | Nó no papel `Candidate` (eleição em andamento) |
+| Caixa verde | Nó no papel `Leader` |
+| Caixa vermelha (`DISCONNECTED`) | Processo do nó **parado** (após `Kill leader` / `Kill node`) |
+| Linha tracejada cinza entre dois nós | Conectividade ativa na porta Raft (7000) entre eles |
+| Ausência de linha entre dois nós | Partição: pacotes Raft entre esses nós estão sendo descartados via `iptables` |
+| Pacote verde em movimento | RPC `AppendEntries` (heartbeat ou replicação de log) |
+| Pacote azul em movimento | RPC `RequestVote` (eleição) |
+
+**Importante:** *partição* (`Partition...`) e *parada do processo* (`Kill leader` / `Kill node`) são coisas diferentes. Uma partição mantém o nó vivo — ele continua emitindo estado para o dashboard pela porta 8100 (que não é bloqueada), só não consegue trocar pacotes Raft com os pares isolados. Já um *kill* derruba o processo todo.
 
 ---
 
@@ -99,22 +120,22 @@ Aguarde até ver, nos logs do terminal, que os três nós estão prontos. Em seg
 http://localhost:8080
 ```
 
-> **Importante:** No primeiro Nível, mantenha o toggle **`Slow motion`** ativado (canto superior direito do dashboard). Em produção, eleições Raft acontecem em ~150–300 ms — rápido demais para o olho humano. O modo lento bumpa o *election timeout* para ~5 s, tornando cada transição visível.
+> **Importante:** No primeiro Nível, mantenha os toggles **`Slow motion`** e **`Hide heartbeats`** ativados (canto superior direito do dashboard). Em produção, eleições Raft acontecem em ~150–300 ms — rápido demais para o olho humano. O modo lento aumenta o *election timeout* para ~10 s e o intervalo de heartbeat para ~500 ms, tornando cada transição visível. O filtro de heartbeats esconde os `AppendEntries` vazios (e suas respostas) do log de eventos para não poluir a tela — os pacotes continuam visíveis no diagrama, mas só RPCs com conteúdo (eleições, replicação de log, applies) aparecem na lista textual.
 
 Você verá o cluster passar pelos seguintes estados em sequência:
 
-1. Os três nós aparecem cinzas (papel `Follower`).
+1. Os três nós aparecem cinzas (papel `Follower`), dispostos em círculo e conectados por linhas tracejadas cinzas (topologia inicial: todos se enxergam).
 2. Após o primeiro timeout, **um deles fica amarelo** (papel `Candidate`) — incrementou o `term` e iniciou eleição.
-3. Setas tracejadas azuis disparam do candidato em direção aos outros dois (`RequestVote`).
-4. Setas azuis com `✓` retornam (votos concedidos).
+3. **Pacotes azuis** partem do candidato em direção aos outros dois (`RequestVote`).
+4. Pacotes azuis de resposta retornam (votos concedidos).
 5. O candidato fica **verde** (papel `Leader`).
-6. A partir daí, setas verdes pequenas pulsam continuamente do líder para os seguidores (heartbeats — `AppendEntries` vazios).
+6. A partir daí, **pacotes verdes** pulsam continuamente do líder para os seguidores (heartbeats — `AppendEntries` vazios).
 
 **Observe e responda (anote no relatório):**
 
 1. Qual nó virou candidato primeiro? Você consegue afirmar com certeza por que esse e não outro? (Dica: os *election timeouts* são randomizados; cada nó escolhe um valor diferente entre 150–300 ms — em modo lento, entre 3–6 s.)
 2. Quantos votos o candidato precisou para virar líder? Por que esse número e não outro?
-3. Após a eleição estabilizar, descreva o padrão de setas verdes que você observa. Qual a finalidade desses heartbeats?
+3. Após a eleição estabilizar, descreva o padrão de pacotes verdes que você observa. Qual a finalidade desses heartbeats?
 
 Encerre com `Ctrl+C`.
 
@@ -186,7 +207,7 @@ Preencha a tabela no relatório baseando-se em tudo que você já observou no da
 **Experimento:** com o cluster estável (um líder verde), clique em `[Put random KV]` algumas vezes no dashboard. Observe **cuidadosamente** os tijolos de log de cada nó:
 
 - Logo após o clique, uma entrada **branca** (não-comprometida) aparece no log do líder.
-- Setas verdes maiores disparam do líder para os seguidores (`AppendEntries` com entrada nova).
+- Pacotes verdes maiores partem do líder em direção aos seguidores (`AppendEntries` com entrada nova).
 - Quando os seguidores respondem, **a entrada vira verde no líder primeiro**, e logo depois nos seguidores.
 
 **Responda:**
@@ -204,7 +225,7 @@ Preencha a tabela no relatório baseando-se em tudo que você já observou no da
 
 Equivalente via script: `./infra/scripts/partition.sh node1`.
 
-**Observe:** o `node1` fica vermelho (desconectado). `node2` e `node3` permanecem juntos, com `node2` ainda como líder.
+**Observe:** as linhas tracejadas que ligavam `node1` aos demais **desaparecem** — visualmente o cluster fica dividido em dois grupos. `node1` permanece **vivo e visível** no dashboard (não fica vermelho, porque o processo continua rodando — apenas os pacotes Raft na porta 7000 estão bloqueados via `iptables`), mas seu `term` começa a subir sozinho. `node2` e `node3` continuam ligados entre si, com `node2` ainda como líder.
 
 **Passo a:** Tente fazer uma escrita contra `node1`:
 ```bash

@@ -18,7 +18,7 @@
 
 > _Resposta:_
 
-3. Após a eleição estabilizar, descreva o padrão de setas verdes que você observa. Qual a finalidade desses heartbeats?
+3. Após a eleição estabilizar, descreva o padrão de pacotes verdes que você observa. Qual a finalidade desses heartbeats?
 
 > _Resposta:_
 
