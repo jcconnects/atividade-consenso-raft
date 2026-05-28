@@ -13,7 +13,12 @@
     logs: new Map(),      // nodeID → array of {index, term, command, key, value, committed}
     paused: false,
     slow: true,
+    hideHeartbeats: true,
     eventCount: 0,
+    // Partition groups: array of node-id arrays. Nodes in the same group can talk
+    // to each other; nodes in different groups are partitioned. Default: one group
+    // containing every node (fully connected cluster).
+    partitions: [NODES.slice()],
   };
 
   for (const id of NODES) {
@@ -40,7 +45,14 @@
   };
 
   function renderNodes() {
-    // Lazy create the SVG arrow layer.
+    // Two SVG layers: links (persistent topology lines, behind boxes) and arrows
+    // (animated packets, in front of boxes).
+    let linkSvg = dom.nodes.querySelector("svg.links");
+    if (!linkSvg) {
+      linkSvg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+      linkSvg.setAttribute("class", "links");
+      dom.nodes.insertBefore(linkSvg, dom.nodes.firstChild);
+    }
     let svg = dom.nodes.querySelector("svg.arrows");
     if (!svg) {
       svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
@@ -48,8 +60,15 @@
       dom.nodes.appendChild(svg);
     }
 
+    // Circular layout: chords between any two nodes never cross another node box.
+    const containerRect = dom.nodes.getBoundingClientRect();
+    const nodeW = 160, nodeH = 140;
+    const cx = containerRect.width / 2;
+    const cy = containerRect.height / 2;
+    const radius = Math.max(120, Math.min(cx, cy) - Math.max(nodeW, nodeH) / 2 - 20);
+
     // Build/refresh node boxes.
-    for (const id of NODES) {
+    NODES.forEach((id, i) => {
       let box = document.getElementById(`node-${id}`);
       const s = state.nodes.get(id);
       if (!box) {
@@ -69,7 +88,15 @@
         `term: ${s.term}<br>commit: ${s.commit}<br>last_log: ${s.lastLog}`;
       box.setAttribute("data-role", s.role);
       box.setAttribute("data-disconnected", s.disconnected ? "true" : "false");
-    }
+      // Place on circle, first node at top, clockwise.
+      const angle = -Math.PI / 2 + (2 * Math.PI * i) / NODES.length;
+      const x = cx + radius * Math.cos(angle) - nodeW / 2;
+      const y = cy + radius * Math.sin(angle) - nodeH / 2;
+      box.style.left = `${x}px`;
+      box.style.top = `${y}px`;
+    });
+
+    renderConnections(linkSvg, containerRect);
 
     // Cluster header stats — derive from current leader, if any.
     let leader = null;
@@ -145,7 +172,53 @@
     }
   }
 
-  function drawArrow(fromID, toID, kind) {
+  // Draw a persistent line between every pair of nodes that are in the same
+  // partition group. Different groups (partitioned) get no line — so the
+  // dashboard reflects current network topology, not just live RPC packets.
+  function renderConnections(svg, containerRect) {
+    svg.innerHTML = "";
+    for (const group of state.partitions) {
+      for (let i = 0; i < group.length; i++) {
+        for (let j = i + 1; j < group.length; j++) {
+          const a = document.getElementById(`node-${group[i]}`);
+          const b = document.getElementById(`node-${group[j]}`);
+          if (!a || !b) continue;
+          const ar = a.getBoundingClientRect();
+          const br = b.getBoundingClientRect();
+          const ax = ar.left + ar.width / 2 - containerRect.left;
+          const ay = ar.top + ar.height / 2 - containerRect.top;
+          const bx = br.left + br.width / 2 - containerRect.left;
+          const by = br.top + br.height / 2 - containerRect.top;
+          const line = document.createElementNS("http://www.w3.org/2000/svg", "line");
+          line.setAttribute("x1", ax);
+          line.setAttribute("y1", ay);
+          line.setAttribute("x2", bx);
+          line.setAttribute("y2", by);
+          line.setAttribute("class", "link");
+          svg.appendChild(line);
+        }
+      }
+    }
+  }
+
+  // Returns the point on the rectangle's border (in container coords) where the
+  // ray from rect center toward (tx, ty) exits the rect, plus a small margin.
+  function rectEdgePoint(rect, containerRect, tx, ty) {
+    const cx = rect.left + rect.width / 2 - containerRect.left;
+    const cy = rect.top + rect.height / 2 - containerRect.top;
+    const dx = tx - cx;
+    const dy = ty - cy;
+    if (dx === 0 && dy === 0) return [cx, cy];
+    const halfW = rect.width / 2;
+    const halfH = rect.height / 2;
+    const scale = Math.min(halfW / Math.abs(dx || 1e-9), halfH / Math.abs(dy || 1e-9));
+    const margin = 10;
+    const len = Math.hypot(dx, dy);
+    const ux = dx / len, uy = dy / len;
+    return [cx + dx * scale + ux * margin, cy + dy * scale + uy * margin];
+  }
+
+  function drawArrow(fromID, toID, kind, extra = {}) {
     const svg = dom.nodes.querySelector("svg.arrows");
     if (!svg) return;
     const from = document.getElementById(`node-${fromID}`);
@@ -154,18 +227,72 @@
     const containerRect = dom.nodes.getBoundingClientRect();
     const fromRect = from.getBoundingClientRect();
     const toRect = to.getBoundingClientRect();
-    const x1 = fromRect.left + fromRect.width / 2 - containerRect.left;
-    const y1 = fromRect.top + fromRect.height / 2 - containerRect.top;
-    const x2 = toRect.left + toRect.width / 2 - containerRect.left;
-    const y2 = toRect.top + toRect.height / 2 - containerRect.top;
-    const line = document.createElementNS("http://www.w3.org/2000/svg", "line");
-    line.setAttribute("x1", x1);
-    line.setAttribute("y1", y1);
-    line.setAttribute("x2", x2);
-    line.setAttribute("y2", y2);
-    line.setAttribute("class", `arrow ${kind === "AppendEntries" ? "arrow-append" : "arrow-vote"}`);
-    svg.appendChild(line);
-    setTimeout(() => line.remove(), 1300);
+    const cx1 = fromRect.left + fromRect.width / 2 - containerRect.left;
+    const cy1 = fromRect.top + fromRect.height / 2 - containerRect.top;
+    const cx2 = toRect.left + toRect.width / 2 - containerRect.left;
+    const cy2 = toRect.top + toRect.height / 2 - containerRect.top;
+    // Offset start/end to the node-box border facing the other node, so the packet is never hidden behind a box.
+    const [x1, y1] = rectEdgePoint(fromRect, containerRect, cx2, cy2);
+    const [x2, y2] = rectEdgePoint(toRect, containerRect, cx1, cy1);
+    const duration = 700;
+    const packet = document.createElementNS("http://www.w3.org/2000/svg", "circle");
+    // Bigger packet for AppendEntries carrying log entries so log replication
+    // visually stands out from the constant heartbeat trickle.
+    const hasPayload = kind === "AppendEntries" && (extra.entries || 0) > 0;
+    packet.setAttribute("r", hasPayload ? 13 : 7);
+    packet.setAttribute("cx", x1);
+    packet.setAttribute("cy", y1);
+    // Distinguish replication traffic carrying client writes (Put) from heartbeats:
+    // AppendEntries with entries>0 is a Put being replicated. Color it differently
+    // so students can visually track a Put's request→response round-trip.
+    let cls;
+    if (kind === "AppendEntries") {
+      cls = hasPayload ? "packet-put" : "packet-append";
+    } else {
+      cls = "packet-vote";
+    }
+    if (hasPayload) cls += " packet-payload";
+    packet.setAttribute("class", `packet ${cls}`);
+    svg.appendChild(packet);
+    const start = performance.now();
+    function step(now) {
+      const t = Math.min(1, (now - start) / duration);
+      const e = t < 0.5 ? 2 * t * t : 1 - Math.pow(-2 * t + 2, 2) / 2; // ease in-out
+      packet.setAttribute("cx", x1 + (x2 - x1) * e);
+      packet.setAttribute("cy", y1 + (y2 - y1) * e);
+      if (t < 1) requestAnimationFrame(step);
+      else packet.remove();
+    }
+    requestAnimationFrame(step);
+  }
+
+  // True for empty AppendEntries (heartbeats) and their responses, which fire
+  // many times per second and would otherwise drown out the interesting events.
+  // RequestVote and AppendEntries carrying log entries are always interesting.
+  function isHeartbeatEvent(ev) {
+    if (!state.hideHeartbeats) return false;
+    if (ev.rpc === "RequestVote" || ev.rpc === "RequestVoteResp") return false;
+    // Empty AppendEntries (and their responses) are heartbeats. Both sides are
+    // tagged with `entries` so we can filter them symmetrically and let the
+    // request→response handshake for a Put show up end-to-end.
+    if (ev.rpc === "AppendEntries" || ev.rpc === "AppendEntriesResp") {
+      return (ev.entries || 0) === 0;
+    }
+    return false;
+  }
+
+  // Raft terms are monotonic. If we observe a higher term for a node via any
+  // event channel, our cached snapshot is stale — update it. If the node was
+  // marked leader at the old (lower) term, demote to follower until a fresh
+  // state snapshot proves otherwise.
+  function bumpTerm(nodeID, term) {
+    if (!nodeID || term == null) return;
+    const s = state.nodes.get(nodeID);
+    if (!s) return;
+    if (term > s.term) {
+      s.term = term;
+      if (s.role === "leader") s.role = "follower";
+    }
   }
 
   function handleEvent(ev) {
@@ -206,12 +333,35 @@
         break;
       case "rpc_send":
         if (ev.from && ev.to && ev.from !== ev.to) {
-          drawArrow(ev.from, ev.to, ev.rpc);
+          drawArrow(ev.from, ev.to, ev.rpc, { entries: ev.entries });
         }
-        if (ev.entries > 0 || ev.rpc === "RequestVote") pushEventLine(ev);
+        // Term observed on the wire is monotonic — use it to correct any stale node-state
+        // we may have missed during an SSE disconnect.
+        bumpTerm(ev.from, ev.term);
+        if (!isHeartbeatEvent(ev)) pushEventLine(ev);
         break;
       case "rpc_resp":
-        pushEventLine(ev);
+        bumpTerm(ev.from, ev.term);
+        // If a peer responds to us with a higher term, our local role must have stepped down.
+        if (state.nodes.has(ev.to)) {
+          const recv = state.nodes.get(ev.to);
+          if (ev.term > recv.term) {
+            recv.term = ev.term;
+            recv.role = "follower";
+          }
+        }
+        // Animate a response packet flying back so users can see the handshake.
+        // Skip heartbeat acks (empty AppendEntries responses) — they fire constantly
+        // and clutter the canvas without adding signal.
+        // Defer the response by the request-packet animation duration so the response
+        // visibly leaves the follower AFTER the request arrives — preserving the
+        // temporal order of the handshake even though both events arrive on the SSE
+        // stream almost simultaneously.
+        if (ev.from && ev.to && ev.from !== ev.to && !(ev.rpc === "AppendEntriesResp" && (ev.entries || 0) === 0)) {
+          const respKind = ev.rpc === "AppendEntriesResp" ? "AppendEntries" : "RequestVote";
+          setTimeout(() => drawArrow(ev.from, ev.to, respKind, { entries: ev.entries }), 700);
+        }
+        if (!isHeartbeatEvent(ev)) pushEventLine(ev);
         break;
     }
     renderNodes();
@@ -233,8 +383,14 @@
       const s = state.nodes.get(id);
       if (s) {
         s.disconnected = true;
+        // Wipe role to avoid showing a stale leader badge while the stream is down.
+        // The next /state snapshot after reconnect will overwrite this.
+        s.role = "follower";
         renderNodes();
       }
+      // Browser EventSource auto-reconnects, but we close + reopen so stats reset
+      // cleanly and we never end up with two live streams for the same node.
+      es.close();
       setTimeout(() => connectToNode(id), 2000);
     };
     es.onopen = () => {
@@ -266,6 +422,8 @@
     controlAction("kill-leader");
   });
   document.getElementById("btn-heal").addEventListener("click", () => {
+    state.partitions = [NODES.slice()];
+    renderNodes();
     controlAction("heal");
   });
   document.getElementById("btn-put").addEventListener("click", () => {
@@ -284,7 +442,12 @@
     const v = e.target.value;
     if (v) {
       const [iso, rest] = v.split("|");
-      controlAction("partition", { isolate: iso.split(","), majority: rest.split(",") });
+      // Dropdown values use bare digits (e.g. "1|2,3"); prepend "node" for ids.
+      const isolate = iso.split(",").map(n => `node${n.trim()}`);
+      const majority = rest.split(",").map(n => `node${n.trim()}`);
+      state.partitions = [isolate, majority];
+      renderNodes();
+      controlAction("partition", { isolate, majority });
       e.target.value = "";
     }
   });
@@ -294,6 +457,9 @@
   document.getElementById("toggle-slow").addEventListener("change", (e) => {
     state.slow = e.target.checked;
     controlAction("slow-motion", { enabled: state.slow });
+  });
+  document.getElementById("toggle-hide-heartbeats").addEventListener("change", (e) => {
+    state.hideHeartbeats = e.target.checked;
   });
 
   for (const id of NODES) {
@@ -306,5 +472,6 @@
   // initial paint
   renderNodes();
   renderLogs();
+  window.addEventListener("resize", renderNodes);
   for (const id of NODES) connectToNode(id);
 })();
