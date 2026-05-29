@@ -91,7 +91,7 @@ func main() {
 	go pollState(r, *nodeID, bus, uint64(*heartbeatMs))
 	go publishReplication(r, *nodeID, bus, tracker)
 
-	api := newHTTPAPI(r, fsm, *nodeID)
+	api := newHTTPAPI(r, fsm, logStore, *nodeID)
 	log.Printf("[%s] HTTP API listening on %s", *nodeID, *httpAddr)
 	log.Printf("[%s] raft transport listening on %s", *nodeID, *raftAddr)
 	log.Printf("[%s] event stream listening on %s", *nodeID, *eventAddr)

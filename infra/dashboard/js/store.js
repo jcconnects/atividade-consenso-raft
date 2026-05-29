@@ -116,14 +116,25 @@ export function createStore({ nodeIds, heartbeatMs }) {
     appendLog(id, entry) {
       update(s => {
         const arr = s.logs[id] || (s.logs[id] = []);
-        // Dedup: se já temos a entrada (mesmo index), atualiza, senão append.
         const existing = arr.findIndex(e => e.index === entry.index);
-        if (existing >= 0) arr[existing] = entry;
-        else arr.push(entry);
+        if (existing >= 0) {
+          // Preserva committed=true se já era — `log_entry` chegando depois
+          // de `apply` não pode regredir o estado.
+          const prev = arr[existing];
+          arr[existing] = {
+            ...prev,
+            ...entry,
+            committed: prev.committed || entry.committed,
+          };
+        } else {
+          arr.push(entry);
+        }
         if (arr.length > LOG_WINDOW) arr.splice(0, arr.length - LOG_WINDOW);
-        // C: destaque transitório nas células recém-aplicadas.
-        if (!s.recently_applied[id]) s.recently_applied[id] = {};
-        s.recently_applied[id] = { ...s.recently_applied[id], [entry.index]: Date.now() };
+        // Destaque transitório só quando a entrada foi de fato aplicada.
+        if (entry.committed) {
+          if (!s.recently_applied[id]) s.recently_applied[id] = {};
+          s.recently_applied[id] = { ...s.recently_applied[id], [entry.index]: Date.now() };
+        }
       });
     },
 
