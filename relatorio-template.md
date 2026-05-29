@@ -18,7 +18,7 @@
 
 > _Resposta:_
 
-3. Após a eleição estabilizar, descreva o padrão de setas verdes que você observa. Qual a finalidade desses heartbeats?
+3. Após a eleição estabilizar, descreva o padrão de pacotes verdes que você observa. Qual a finalidade desses heartbeats?
 
 > _Resposta:_
 
@@ -30,7 +30,7 @@
 
 ## Nível 0b — Derrubar líder ao vivo
 
-4. Quanto tempo (aproximadamente, em modo lento) passou entre a morte do líder e a eleição do novo líder?
+4. Quanto tempo (aproximadamente, no `HEARTBEAT_MS` configurado) passou entre a morte do líder e a eleição do novo líder?
 
 > _Resposta:_
 
@@ -159,7 +159,7 @@ Sequência de `term`s observada após derrubadas sucessivas do líder:
 
 ## Nível 2 — Modificar
 
-### 2.1 Modificação A — Cluster de 5 nós
+### Modificação A — Cluster de 5 nós
 
 **Screenshot — cabeçalho do dashboard com `quorum: 3/5`:**
 
@@ -184,36 +184,6 @@ Sequência de `term`s observada após derrubadas sucessivas do líder:
 4. Em que cenário real (operação de produção) você escolheria 5 nós em vez de 3?
 
 > _Resposta:_
-
----
-
-### 2.2 Modificação B — Operação CAS
-
-1. Por que o CAS precisa obrigatoriamente passar pelo log Raft? O que aconteceria se cada nó decidisse o resultado localmente?
-
-> _Resposta:_
-
-2. Como Raft + CAS produzem operações linearizáveis mesmo com replicação assíncrona entre nós?
-
-> _Resposta:_
-
-3. Cole o trecho do `Apply()` que você modificou:
-
-```go
-// trecho do switch em Apply() aqui
-```
-
-E o trecho da rota HTTP que você adicionou:
-
-```go
-// trecho da rota /cas aqui
-```
-
-**Saída dos testes com `curl`:**
-
-```
-(cole as saídas dos 3 curls do enunciado aqui — o PUT, o CAS bem-sucedido, e o CAS que deve falhar)
-```
 
 ---
 

@@ -143,7 +143,7 @@ Outras opções consideradas: implementar Raft do zero (excelente para profundid
 Um cluster Raft funcional requer **múltiplos processos isolados em rede**, com a capacidade de **simular falhas e partições**. Docker Compose permite:
 
 - Iniciar 3 (ou 5) nós idênticos com uma única configuração declarativa.
-- Isolar nós da rede (`docker network disconnect`) para experimentar partições sem afetar o sistema hospedeiro.
+- Isolar nós da rede (bloqueando a porta Raft via `iptables` dentro do contêiner) para experimentar partições sem afetar o sistema hospedeiro.
 - Reiniciar nós individualmente para observar recuperação após falha.
 
 Tentar reproduzir esses experimentos sem isolamento de contêineres exigiria configuração manual extensiva de portas, processos e regras de rede — invertendo a proporção entre infraestrutura e aprendizagem.

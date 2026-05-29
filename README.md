@@ -46,10 +46,12 @@ Ao final desta atividade, você será capaz de:
 
 ```
 atividade-consenso-raft/
-├── docker-compose.yml         ← orquestra cluster + dashboard
+├── docker-compose.yml         ← orquestra cluster + dashboard + broker
 ├── infra/
-│   ├── node/                  ← binário Go: nó Raft + KV + event tap
+│   ├── node/                  ← binário Go: nó Raft + KV + event tap (com iptables)
 │   ├── dashboard/             ← HTML+JS estático, visualizador ao vivo
+│   ├── broker/                ← serviço Python que traduz cliques do dashboard
+│   │                            em ações de controle (kill, partition via iptables, heal)
 │   └── scripts/
 │       ├── kill-leader.sh     ← identifica líder atual e o derruba
 │       ├── partition.sh       ← isola subconjunto de nós da rede
@@ -81,7 +83,47 @@ atividade-consenso-raft/
                                 seu navegador
 ```
 
-Os três nós formam o cluster Raft, comunicando-se por RPCs `AppendEntries` e `RequestVote` entre si. O dashboard observa todos os três (via WebSocket), agrega seus eventos e desenha o estado do cluster no navegador em tempo real.
+Os três nós formam o cluster Raft, comunicando-se por RPCs `AppendEntries` e `RequestVote` entre si. O dashboard observa todos os três (via Server-Sent Events), agrega seus eventos e desenha o estado do cluster no navegador em tempo real.
+
+Os nós são renderizados em **layout circular** e ligados por **linhas tracejadas cinzas** que representam a topologia ativa da rede: enquanto dois nós podem se comunicar, existe uma linha entre eles; quando uma partição é aplicada, a linha se torna vermelha.
+
+Cada RPC enviado é representado por um **pacote animado** (círculo colorido) que parte do nó remetente e viaja até o destinatário: verde para `AppendEntries`, azul para `RequestVote`.
+
+### Legenda visual do dashboard
+
+| Elemento | Significado |
+|---|---|
+| Caixa cinza | Nó no papel `Follower` |
+| Caixa amarela | Nó no papel `Candidate` (eleição em andamento) |
+| Caixa verde | Nó no papel `Leader` |
+| Caixa vermelha (`DISCONNECTED`) | Processo do nó **parado** (após `Matar` no card, `Matar líder` no header, ou `docker stop`) |
+| Borda tracejada vermelha em um card | Nó marcado como `Isolar` pendente, aguardando `Aplicar partição` |
+| Linha tracejada cinza entre dois nós | Conectividade ativa na porta Raft (7000) entre eles |
+| Ausência de linha entre dois nós | Partição observada: pacotes Raft entre esses nós não estão chegando (silêncio acima de `2 × HEARTBEAT_MS`) |
+| Pacote verde em movimento | RPC `AppendEntries` (heartbeat ou replicação de log) |
+| Pacote azul em movimento | RPC `RequestVote` (eleição) |
+| Célula verde pulsando no painel `Logs replicados` | Entrada **acabou de ser aplicada** naquele nó (destaque ~1.5 s após o evento `apply`) |
+| Badge `QUÓRUM ATINGIDO idx=N` no card do líder | Líder **acabou de contabilizar maioria** de acks no índice N (destaque ~2 s após o avanço de `commit_idx`) |
+
+**Botões no header** (ações globais): `Matar líder`, `Curar tudo`, `Put aleatório`, e `Aplicar partição (N marcados)` aparece quando há nós marcados.
+
+**Botões em cada card** (ações por nó): `Matar`, `Isolar` (vira `Cancelar` se pendente e `Liberar` se aplicado), `Curar este nó` (aparece só quando o nó está parado).
+
+### Como acompanhar a consolidação de uma escrita
+
+Clique em `Put aleatório` no header e observe a sequência:
+
+1. **No card do líder** (verde): `last_log` sobe imediatamente (entrada anexada localmente).
+2. **Pacote verde escuro** parte do líder para cada seguidor — replicação (`AppendEntries` com entries > 0).
+3. **Pacote verde-amarelado** volta de cada seguidor — ack (`AppendEntriesResp success=true`).
+4. **Badge `QUÓRUM ATINGIDO`** aparece momentaneamente no card do líder no instante em que ele recebeu acks da maioria. `commit` no card sobe.
+5. **Linha do painel `Logs replicados`** correspondente ao índice começa a pulsar verde, primeiro na coluna do líder.
+6. **Próximo `AppendEntries` heartbeat** carrega `leader_commit` atualizado para os seguidores.
+7. **Coluna de cada seguidor** no painel pulsa verde quando o respectivo nó aplica a entrada.
+
+A defasagem temporal entre passos 4–5 (líder) e 7 (seguidores) é a **defasagem real do Raft**, não atraso artificial do dashboard. Em `HEARTBEAT_MS=5000`, isso pode ficar entre o instante do ack e o próximo heartbeat (até ~5 s).
+
+**Importante:** *partição* (criada via `Isolar` + `Aplicar partição`, ou via `./infra/scripts/partition.sh`) e *parada do processo* (via `Matar` no card ou `Matar líder` no header) são coisas diferentes. Uma partição mantém o nó vivo — ele continua emitindo estado para o dashboard pela porta 8100 (que não é bloqueada), só não consegue trocar pacotes Raft com os pares isolados. Já um *kill* derruba o processo todo.
 
 ---
 
@@ -99,22 +141,22 @@ Aguarde até ver, nos logs do terminal, que os três nós estão prontos. Em seg
 http://localhost:8080
 ```
 
-> **Importante:** No primeiro Nível, mantenha o toggle **`Slow motion`** ativado (canto superior direito do dashboard). Em produção, eleições Raft acontecem em ~150–300 ms — rápido demais para o olho humano. O modo lento bumpa o *election timeout* para ~5 s, tornando cada transição visível.
+> O cluster já vem configurado em ritmo de observação humana: `RAFT_HEARTBEAT_MS=5000` no `docker-compose.yml`, o que coloca o intervalo de heartbeat em 5 s e o *election timeout* em 10 s. Em produção, Raft opera em ~150–300 ms — rápido demais para acompanhar visualmente. Se quiser observar com ainda mais calma, edite `RAFT_HEARTBEAT_MS` para `10000` em todos os nós e refaça `docker compose down -v && docker compose up --build`.
 
 Você verá o cluster passar pelos seguintes estados em sequência:
 
-1. Os três nós aparecem cinzas (papel `Follower`).
+1. Os três nós aparecem cinzas (papel `Follower`), dispostos em círculo e conectados por linhas tracejadas cinzas (topologia inicial: todos se enxergam).
 2. Após o primeiro timeout, **um deles fica amarelo** (papel `Candidate`) — incrementou o `term` e iniciou eleição.
-3. Setas tracejadas azuis disparam do candidato em direção aos outros dois (`RequestVote`).
-4. Setas azuis com `✓` retornam (votos concedidos).
+3. **Pacotes azuis** partem do candidato em direção aos outros dois (`RequestVote`).
+4. Pacotes azuis de resposta retornam (votos concedidos).
 5. O candidato fica **verde** (papel `Leader`).
-6. A partir daí, setas verdes pequenas pulsam continuamente do líder para os seguidores (heartbeats — `AppendEntries` vazios).
+6. A partir daí, **pacotes verdes** pulsam continuamente do líder para os seguidores (heartbeats — `AppendEntries` vazios).
 
 **Observe e responda (anote no relatório):**
 
-1. Qual nó virou candidato primeiro? Você consegue afirmar com certeza por que esse e não outro? (Dica: os *election timeouts* são randomizados; cada nó escolhe um valor diferente entre 150–300 ms — em modo lento, entre 3–6 s.)
+1. Qual nó virou candidato primeiro? Você consegue afirmar com certeza por que esse e não outro? (Dica: os *election timeouts* são randomizados; cada nó escolhe um valor diferente entre 150–300 ms em produção; com `RAFT_HEARTBEAT_MS=5000` o intervalo equivalente fica entre 5 e 10 s.)
 2. Quantos votos o candidato precisou para virar líder? Por que esse número e não outro?
-3. Após a eleição estabilizar, descreva o padrão de setas verdes que você observa. Qual a finalidade desses heartbeats?
+3. Após a eleição estabilizar, descreva o padrão de pacotes verdes que você observa. Qual a finalidade desses heartbeats?
 
 Encerre com `Ctrl+C`.
 
@@ -130,20 +172,17 @@ docker compose up --build
 ```
 Confirme no dashboard que um líder verde foi eleito. Anote qual nó é o líder e qual o `term` atual.
 
-**Passo 2:** No dashboard, clique em `[Kill leader]`. (Alternativamente, em outro terminal: `./infra/scripts/kill-leader.sh`.)
+**Passo 2:** No dashboard, clique em `Matar líder` no header. (Alternativamente, em outro terminal: `./infra/scripts/kill-leader.sh`.)
 
 **Observe:** o nó verde desaparece (vira vermelho — desconectado). Por alguns segundos, os outros dois nós continuam cinzas (followers órfãos — sem heartbeat chegando). Então um deles fica amarelo (candidato), inicia nova eleição com `term` incrementado, e vira verde (novo líder).
 
-**Passo 3:** Reanime o nó derrubado:
-```bash
-docker compose start node<N>     # substitua <N> pelo nó morto, ex: node1
-```
+**Passo 3:** Reanime o nó derrubado clicando em `Curar este nó` no card do nó morto. (Alternativamente, em outro terminal: `docker compose start node<N>`, substituindo `<N>` pelo nó morto.)
 
 **Observe:** o nó volta cinza (follower). Veja o seu log: ele recebe `AppendEntries` do novo líder com o `term` atual e seu log se atualiza automaticamente.
 
 **Responda:**
 
-4. Quanto tempo (aproximadamente, em modo lento) passou entre a morte do líder e a eleição do novo líder? Esse tempo é o que se chama *recovery time* em sistemas de alta disponibilidade.
+4. Quanto tempo (aproximadamente, no `HEARTBEAT_MS` configurado) passou entre a morte do líder e a eleição do novo líder? Esse tempo é o que se chama *recovery time* em sistemas de alta disponibilidade.
 5. O `term` subiu ou desceu após a nova eleição? Por quê não pode descer?
 6. Quando o nó morto voltou e virou follower, ele "esqueceu" que tinha sido líder anteriormente? Onde no dashboard você consegue ver essa transição registrada?
 7. Compare com um servidor único (sem replicação): se ele cai, o que acontece com o serviço? Quanto tempo seu serviço fica indisponível?
@@ -152,7 +191,7 @@ docker compose start node<N>     # substitua <N> pelo nó morto, ex: node1
 
 ## Nível 1 — Inspecionar
 
-Agora você vai usar o dashboard como **instrumento de medida** sobre o comportamento do algoritmo. Em todos os experimentos deste nível, mantenha o modo **`Slow motion` ativado** para conseguir observar as transições.
+Agora você vai usar o dashboard como **instrumento de medida** sobre o comportamento do algoritmo. Mantenha o `RAFT_HEARTBEAT_MS` padrão (5000ms) ou aumente para 10000ms se quiser cronometrar com mais calma.
 
 ### 1.1 Os três papéis
 
@@ -183,10 +222,10 @@ Preencha a tabela no relatório baseando-se em tudo que você já observou no da
 
 ### 1.3 Quórum e comprometimento de entradas
 
-**Experimento:** com o cluster estável (um líder verde), clique em `[Put random KV]` algumas vezes no dashboard. Observe **cuidadosamente** os tijolos de log de cada nó:
+**Experimento:** com o cluster estável (um líder verde), clique em `[Put random KV]` algumas vezes no dashboard. Observe **cuidadosamente** os logs de cada nó:
 
 - Logo após o clique, uma entrada **branca** (não-comprometida) aparece no log do líder.
-- Setas verdes maiores disparam do líder para os seguidores (`AppendEntries` com entrada nova).
+- Pacotes verdes maiores partem do líder em direção aos seguidores (`AppendEntries` com entrada nova).
 - Quando os seguidores respondem, **a entrada vira verde no líder primeiro**, e logo depois nos seguidores.
 
 **Responda:**
@@ -198,13 +237,13 @@ Preencha a tabela no relatório baseando-se em tudo que você já observou no da
 ### 1.4 Partição minoritária
 
 **Experimento:** com cluster estável (digamos `node2` é o líder), use o dashboard para criar uma partição que isola apenas `node1`:
-```
-[Partition (1) | (2,3)]
-```
+
+1. No card de `node1`, clique em `Isolar`. A borda do card vira tracejada vermelha (estado pendente).
+2. No header surge o botão `Aplicar partição (1 marcado)`. Clique nele.
 
 Equivalente via script: `./infra/scripts/partition.sh node1`.
 
-**Observe:** o `node1` fica vermelho (desconectado). `node2` e `node3` permanecem juntos, com `node2` ainda como líder.
+**Observe:** as linhas tracejadas que ligavam `node1` aos demais **desaparecem** — visualmente o cluster fica dividido em dois grupos. `node1` permanece **vivo e visível** no dashboard (não fica vermelho, porque o processo continua rodando — apenas os pacotes Raft na porta 7000 estão bloqueados via `iptables`), mas seu `term` começa a subir sozinho. `node2` e `node3` continuam ligados entre si, com `node2` ainda como líder.
 
 **Passo a:** Tente fazer uma escrita contra `node1`:
 ```bash
@@ -225,10 +264,7 @@ Equivalente via script: `./infra/scripts/partition.sh node1`.
 3. O `node1` isolado tentou virar candidato? O que aconteceu com o `term` dele durante o isolamento?
 4. Por que `node1` sozinho não consegue eleger líder próprio? Qual regra de Raft impede isso?
 
-Restaure a rede:
-```
-[Heal all]    (ou ./infra/scripts/heal.sh)
-```
+Restaure a rede clicando em `Curar tudo` no header do dashboard (ou rode `./infra/scripts/heal.sh` em outro terminal).
 
 ### 1.5 Partição majoritária e reconciliação de log
 
@@ -236,19 +272,13 @@ Este é o experimento mais importante do Nível 1. Ele demonstra a propriedade *
 
 **Setup:** com o cluster estável, identifique o líder atual no dashboard. Suponha que seja `node1` no `term=3`.
 
-**Passo 1 — Isolar o líder no lado minoritário:**
-```
-[Partition (1) | (2,3)]
-```
-`node1` (o líder antigo) fica isolado. `node2` e `node3` ainda estão conectados entre si — eles são a maioria.
+**Passo 1 — Isolar o líder no lado minoritário:** no card de `node1`, clique em `Isolar` e depois em `Aplicar partição` no header. `node1` (o líder antigo) fica isolado. `node2` e `node3` ainda estão conectados entre si — eles são a maioria.
 
 **Passo 2 — Escrever no líder isolado:** tente algumas escritas contra `node1`:
 ```bash
 ./infra/scripts/put.sh node1 chave_zumbi_a valor_a
 ./infra/scripts/put.sh node1 chave_zumbi_b valor_b
 ```
-
-**Observe:** essas entradas aparecem **brancas** no log de `node1` (ele as registrou localmente), mas **nunca viram verdes** — ele não consegue alcançar maioria, porque está sozinho.
 
 **Passo 3 — Observar o lado majoritário:** olhe `node2` e `node3` no dashboard. Após alguns segundos, um deles deve ter incrementado `term` e virado novo líder.
 
@@ -260,16 +290,12 @@ Este é o experimento mais importante do Nível 1. Ele demonstra a propriedade *
 
 Esta entrada deve virar verde no log do novo líder e do follower companheiro.
 
-**Passo 5 — Curar a partição:**
-```
-[Heal all]
-```
+**Passo 5 — Curar a partição:** clique em `Curar tudo` no header do dashboard.
 
 **Observe cuidadosamente o log de `node1`:**
 
 - Ele recebe `AppendEntries` do novo líder com `term` maior que o seu.
 - Ele atualiza `currentTerm`, volta a ser follower.
-- **As entradas brancas que ele escreveu enquanto isolado desaparecem do log dele.**
 - O log dele converge para o do líder atual.
 
 **Responda:**
@@ -290,7 +316,11 @@ Atualmente o cluster tem 3 nós e tolera 1 falha. Vamos escalar para 5 e observa
 **Passo 1:** Abra `docker-compose.yml` e adicione dois novos serviços (`node4` e `node5`) copiando o padrão dos existentes. Ajuste:
 - Nomes de hostname e container.
 - Variável `RAFT_PEERS` em **todos** os nós para listar os 5 endereços.
-- Volume de dados separado por nó.
+- Variável `RAFT_NODES` nos serviços `dashboard` e `broker` para `"node1,node2,node3,node4,node5"`.
+- Variável `RAFT_HEARTBEAT_MS` em cada nó novo (mantenha o mesmo valor dos existentes).
+- Volume de dados separado por nó (adicione `node4-data` e `node5-data` ao bloco `volumes:`).
+
+A receita completa está em `infra/dashboard/docs/EXTENSAO.md`, seção "Adicionar um nó".
 
 **Passo 2:** Recompile e suba o cluster:
 ```bash
@@ -318,32 +348,6 @@ Observe: o cluster trava. Os dois nós restantes (`node4`, `node5`) tentam elei�
 2. Se você escalasse para 6 nós (par), quantas falhas tolera? Por que tamanhos pares são desencorajados?
 3. Qual o trade-off de aumentar o tamanho do cluster? (Dica: pense em latência de comprometimento e overhead de mensagens.)
 4. Em que cenário real (em termos de operação de produção) você escolheria 5 nós em vez de 3?
-
-Restaure o cluster original de 3 nós antes de seguir para a Modificação B.
-
-### Modificação B — Adicionar operação CAS (compare-and-swap) (aberta)
-
-A FSM atual suporta `PUT` (escreve incondicional) e `GET` (lê). Operações concorrentes via PUT podem causar perda de atualização: cliente A lê `x=1`, cliente B lê `x=1`, ambos escrevem `x=2` e `x=3` respectivamente — uma das escritas é silenciosamente perdida.
-
-Sua tarefa: adicionar operação **`CAS(key, expected, new)`** — "atualize `key` para `new` se e somente se o valor atual for `expected`; caso contrário, falhe". CAS é a primitiva clássica usada para implementar contadores, locks otimistas e estruturas concorrentes em sistemas distribuídos.
-
-**Passos sugeridos:**
-
-1. Em `infra/node/fsm.go`, identifique o `switch` em `Apply()`. Adicione um novo `case` para o tipo de comando `CAS`.
-2. Em `infra/node/http.go`, adicione uma rota `POST /cas` que recebe `{key, expected, new}` e submete o comando ao Raft.
-3. Reconstrua: `docker compose up --build`.
-4. Teste:
-   ```bash
-   curl -X POST localhost:9001/put -d '{"key":"contador","value":"0"}'
-   curl -X POST localhost:9001/cas -d '{"key":"contador","expected":"0","new":"1"}'   # sucesso
-   curl -X POST localhost:9001/cas -d '{"key":"contador","expected":"0","new":"2"}'   # falha (já é "1")
-   ```
-
-**Responda no relatório:**
-
-1. Por que o CAS **precisa obrigatoriamente** passar pelo log Raft, mesmo que pareça uma simples leitura-seguida-de-escrita? O que aconteceria se cada nó decidisse o resultado do CAS localmente, sem replicar?
-2. Linearizabilidade é a propriedade que garante que operações concorrentes parecem ocorrer em alguma ordem sequencial consistente. Como Raft + CAS produzem operações linearizáveis mesmo com replicação assíncrona entre nós?
-3. Cole no relatório o trecho do `Apply()` que você modificou e o trecho da rota HTTP que você adicionou.
 
 ---
 

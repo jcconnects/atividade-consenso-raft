@@ -3,13 +3,11 @@
 # and stops its container. The cluster should re-elect within a few seconds.
 set -euo pipefail
 
-NODES=(node1 node2 node3)
-HOST_PORTS=(9001 9002 9003)
+declare -A PORTS=([node1]=9001 [node2]=9002 [node3]=9003 [node4]=9004 [node5]=9005)
 
 leader=""
-for i in "${!NODES[@]}"; do
-  port="${HOST_PORTS[$i]}"
-  node="${NODES[$i]}"
+for node in "${!PORTS[@]}"; do
+  port="${PORTS[$node]}"
   resp=$(curl -sf "http://localhost:${port}/status" 2>/dev/null || true)
   if [ -z "$resp" ]; then
     continue

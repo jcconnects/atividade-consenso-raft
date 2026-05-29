@@ -6,8 +6,10 @@ name: atividade-consenso-raft
 # Only node1 has RAFT_BOOTSTRAP=true; it creates the initial cluster
 # configuration. The others learn about peers via the bootstrap.
 #
-# SLOW_MOTION=true bumps election timeouts to ~3s so humans can watch
-# elections unfold. Set SLOW_MOTION=false for production-speed timings.
+# RAFT_HEARTBEAT_MS controls all Raft timing (heartbeat, election, lease,
+# commit) and the dashboard animation derives from it. Default 5000ms is
+# tuned for human observation; set to ~500 for production speed or to
+# 10000+ for slow demos. Must be the same on every node.
 
 services:
   node1:
@@ -15,6 +17,8 @@ services:
       context: ./infra/node
     container_name: node1
     hostname: node1
+    cap_add:
+      - NET_ADMIN
     networks:
       rede-raft:
     environment:
@@ -25,7 +29,7 @@ services:
       DATA_DIR: /data
       RAFT_PEERS: "node1=node1:7000,node2=node2:7000,node3=node3:7000"
       RAFT_BOOTSTRAP: "true"
-      SLOW_MOTION: "true"
+      RAFT_HEARTBEAT_MS: "5000"
     volumes:
       - node1-data:/data
     expose: ["7000", "8100", "9000"]
@@ -37,6 +41,8 @@ services:
       context: ./infra/node
     container_name: node2
     hostname: node2
+    cap_add:
+      - NET_ADMIN
     networks:
       rede-raft:
     environment:
@@ -47,7 +53,7 @@ services:
       DATA_DIR: /data
       RAFT_PEERS: "node1=node1:7000,node2=node2:7000,node3=node3:7000"
       RAFT_BOOTSTRAP: "false"
-      SLOW_MOTION: "true"
+      RAFT_HEARTBEAT_MS: "5000"
     volumes:
       - node2-data:/data
     expose: ["7000", "8100", "9000"]
@@ -59,6 +65,8 @@ services:
       context: ./infra/node
     container_name: node3
     hostname: node3
+    cap_add:
+      - NET_ADMIN
     networks:
       rede-raft:
     environment:
@@ -69,7 +77,7 @@ services:
       DATA_DIR: /data
       RAFT_PEERS: "node1=node1:7000,node2=node2:7000,node3=node3:7000"
       RAFT_BOOTSTRAP: "false"
-      SLOW_MOTION: "true"
+      RAFT_HEARTBEAT_MS: "5000"
     volumes:
       - node3-data:/data
     expose: ["7000", "8100", "9000"]
