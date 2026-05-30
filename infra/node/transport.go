@@ -1,40 +1,10 @@
 package main
 
 import (
-	"encoding/json"
 	"io"
 
 	"github.com/hashicorp/raft"
 )
-
-// emitLogEntries decodes each Raft log entry in an outgoing AppendEntries
-// request and publishes a `log_entry` event per entry. The event carries the
-// destination follower in `To`, so the dashboard can populate that follower's
-// log column even when it never saw the corresponding FSM `apply` event
-// (e.g., during catch-up after a revive, when entries flow before the SSE
-// client reconnects, or on the leader side before commit).
-func emitLogEntries(bus *eventBus, leaderID, peerID string, entries []*raft.Log) {
-	for _, l := range entries {
-		if l.Type != raft.LogCommand {
-			continue
-		}
-		var cmd Command
-		if err := json.Unmarshal(l.Data, &cmd); err != nil {
-			continue
-		}
-		bus.publish(event{
-			Type:    "log_entry",
-			Node:    leaderID,
-			From:    leaderID,
-			To:      peerID,
-			Index:   l.Index,
-			Term:    l.Term,
-			Command: string(cmd.Type),
-			Key:     cmd.Key,
-			Value:   cmd.Value,
-		})
-	}
-}
 
 // wrapTransport wraps a raft.Transport so every outgoing RPC produces a
 // "rpc_send" event on the bus. Incoming responses produce companion events.
@@ -78,7 +48,6 @@ func (t *observingTransport) AppendEntries(id raft.ServerID, target raft.ServerA
 		Entries: len(args.Entries),
 		Index:   highIdx,
 	})
-	emitLogEntries(t.bus, t.nodeID, string(id), args.Entries)
 	err := t.inner.AppendEntries(id, target, args, resp)
 	if err == nil {
 		t.bus.publish(event{
@@ -209,7 +178,6 @@ func (p *observingPipeline) AppendEntries(args *raft.AppendEntriesRequest, resp 
 		Entries: len(args.Entries),
 		Index:   highIdx,
 	})
-	emitLogEntries(p.bus, p.nodeID, p.peerID, args.Entries)
 	return p.inner.AppendEntries(args, resp)
 }
 

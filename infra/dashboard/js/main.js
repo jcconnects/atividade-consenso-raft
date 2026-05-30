@@ -8,7 +8,6 @@ import * as roleHandler from './handlers/roleHandler.js';
 import * as rpcHandler from './handlers/rpcHandler.js';
 import * as applyHandler from './handlers/applyHandler.js';
 import * as replicationHandler from './handlers/replicationHandler.js';
-import * as logEntryHandler from './handlers/logEntryHandler.js';
 
 import * as topology from './views/topologyView.js';
 import * as nodeCard from './views/nodeCardView.js';
@@ -30,7 +29,6 @@ roleHandler.register(bus, store);
 rpcHandler.register(bus, store);
 applyHandler.register(bus, store);
 replicationHandler.register(bus, store);
-logEntryHandler.register(bus, store);
 
 topology.mount(document.getElementById('topologia'), store);
 nodeCard.mount(document.getElementById('cards'), store);
