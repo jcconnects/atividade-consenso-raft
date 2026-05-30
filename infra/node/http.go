@@ -12,23 +12,26 @@ import (
 )
 
 type httpAPI struct {
-	mux    *http.ServeMux
-	raft   *raft.Raft
-	fsm    *kvFSM
-	nodeID string
+	mux      *http.ServeMux
+	raft     *raft.Raft
+	fsm      *kvFSM
+	logStore raft.LogStore
+	nodeID   string
 }
 
-func newHTTPAPI(r *raft.Raft, fsm *kvFSM, nodeID string) *httpAPI {
+func newHTTPAPI(r *raft.Raft, fsm *kvFSM, logStore raft.LogStore, nodeID string) *httpAPI {
 	a := &httpAPI{
-		mux:    http.NewServeMux(),
-		raft:   r,
-		fsm:    fsm,
-		nodeID: nodeID,
+		mux:      http.NewServeMux(),
+		raft:     r,
+		fsm:      fsm,
+		logStore: logStore,
+		nodeID:   nodeID,
 	}
 	a.mux.HandleFunc("/put", a.handlePut)
 	a.mux.HandleFunc("/delete", a.handleDelete)
 	a.mux.HandleFunc("/get", a.handleGet)
 	a.mux.HandleFunc("/status", a.handleStatus)
+	a.mux.HandleFunc("/log", a.handleLog)
 	a.mux.HandleFunc("/health", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	})
@@ -125,6 +128,59 @@ func (a *httpAPI) submit(w http.ResponseWriter, cmd Command) {
 	json.NewEncoder(w).Encode(map[string]any{
 		"ok":    true,
 		"index": future.Index(),
+	})
+}
+
+// handleLog returns the local Raft log decoded as KV commands. The dashboard
+// fetches this on (re)connect to seed its log matrix, so entries replicated
+// silently (catch-up after revive, or follower-side reconciliation after a
+// partition heal) are visible even when the corresponding `apply` and
+// `log_entry` events were missed.
+func (a *httpAPI) handleLog(w http.ResponseWriter, r *http.Request) {
+	first, err := a.logStore.FirstIndex()
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	last, err := a.logStore.LastIndex()
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	type entry struct {
+		Index   uint64 `json:"index"`
+		Term    uint64 `json:"term"`
+		Command string `json:"command"`
+		Key     string `json:"key"`
+		Value   string `json:"value,omitempty"`
+	}
+	out := []entry{}
+	var rec raft.Log
+	for i := first; i <= last && i != 0; i++ {
+		if err := a.logStore.GetLog(i, &rec); err != nil {
+			continue
+		}
+		if rec.Type != raft.LogCommand {
+			continue
+		}
+		var cmd Command
+		if err := json.Unmarshal(rec.Data, &cmd); err != nil {
+			continue
+		}
+		out = append(out, entry{
+			Index:   rec.Index,
+			Term:    rec.Term,
+			Command: string(cmd.Type),
+			Key:     cmd.Key,
+			Value:   cmd.Value,
+		})
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]any{
+		"node":    a.nodeID,
+		"first":   first,
+		"last":    last,
+		"entries": out,
 	})
 }
 

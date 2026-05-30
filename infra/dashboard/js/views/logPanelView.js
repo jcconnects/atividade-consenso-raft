@@ -73,19 +73,23 @@ export function mount(root, store) {
         const e = byNodeIdx[id][idx];
         const td = el('td', 'cel');
         if (e) {
-          // Aplicada (comprometida) neste nó.
-          td.classList.add('comprometido');
+          // Entrada presente no log local. Verde apenas se commit_idx do nó
+          // alcança esse índice; senão branca (anexada mas não comprometida).
+          const committed = e.committed === true || (n && idx <= n.commit_idx);
+          if (committed) {
+            td.classList.add('comprometido');
+          } else {
+            td.classList.add('em-voo');
+          }
           const cmd = el('span', 'cmd', e.command || '');
           const kv = el('span', 'kv');
           kv.textContent = e.value ? `${e.key}=${e.value}` : (e.key || '');
           td.appendChild(cmd);
           td.appendChild(kv);
           if (refTerm !== null && e.term !== refTerm) {
-            // Term divergente → entrada inconsistente entre nós.
             td.classList.add('divergente');
             td.title = `term ${e.term} difere do esperado ${refTerm}`;
           }
-          // C: destaque transitório se a entrada foi aplicada recentemente.
           const appliedAt = (s.recently_applied[id] || {})[idx];
           if (appliedAt && (Date.now() - appliedAt) < HIGHLIGHT_APPLY_MS) {
             td.classList.add('recem-aplicado');

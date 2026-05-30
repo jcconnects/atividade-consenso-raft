@@ -27,6 +27,14 @@ server {
         include /etc/nginx/conf.d/sse.inc;
     }
 
+    # Log snapshot: /log/nodeN → http://nodeN:9000/log
+    location ~ ^/log/(?<lognode>node[0-9]+)$ {
+        set $logupstream http://$lognode:9000/log;
+        proxy_pass $logupstream;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+    }
+
     # Control endpoints handled by the broker container.
     location ~ ^/control/(?<ctl_path>.*)$ {
         set $broker http://broker:9100/$ctl_path;
